@@ -97,7 +97,7 @@ def majorlogin_jwt():
         if error:
             return jsonify({"message": error}), 400
 
-    platforms = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  
+    platforms = [8, 3, 4, 6]  
 
     for platform_type in platforms:
         game_data = my_pb2.GameData()
@@ -233,5 +233,3 @@ def oauth_guest():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=1080, debug=False)
-
-#app.py is full code and the text code is main code . now your work is i want to see the  ( "AccountLevel": ) this in my main code
