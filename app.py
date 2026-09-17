@@ -1,235 +1,181 @@
+import time
+import httpx
+import json
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+from google.protobuf import json_format, message
+from google.protobuf.message import Message
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-import binascii
-import requests
-import my_pb2
-import output_pb2
-import jwt
+import base64
+import FreeFire_pb2
 
+# === Settings ===
+MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
+MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
+RELEASEVERSION = "OB55"
+USERAGENT = "UnityPlayer/2018.4.12f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)"
+LOGIN_URL = "https://loginbp.ppmainecoonghj.com/"
+CLIENT_URL = "https://clientbp.ppmainecoonghj.com/"
+
+# === Flask App Setup ===
 app = Flask(__name__)
+CORS(app)
 
-AES_KEY = b'Yg&tc%DEuh6%Zc^8'
-AES_IV = b'6oyZDr22E3ychjM%'
+# === Helper Functions ===
+def pad(text: bytes) -> bytes:
+    padding_length = AES.block_size - (len(text) % AES.block_size)
+    return text + bytes([padding_length] * padding_length)
 
-def encrypt_message(plaintext):
-    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
-    padded_message = pad(plaintext, AES.block_size)
-    return cipher.encrypt(padded_message)
+def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
+    aes = AES.new(key, AES.MODE_CBC, iv)
+    return aes.encrypt(pad(plaintext))
 
-def fetch_open_id(access_token):
-    try:
-    
-        uid_url = "https://prod-api.reward.ff.garena.com/redemption/api/auth/inspect_token/"
-        uid_headers = {
-            "authority": "prod-api.reward.ff.garena.com",
-            "method": "GET",
-            "path": "/redemption/api/auth/inspect_token/",
-            "scheme": "https",
-            "accept": "application/json, text/plain, */*",
-            "accept-encoding": "gzip, deflate, br",
-            "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-            "access-token": access_token,
-            "cookie": "_gid=GA1.2.444482899.1724033242; _ga_XB5PSHEQB4=GS1.1.1724040177.1.1.1724040732.0.0.0; token_session=cb73a97aaef2f1c7fd138757dc28a08f92904b1062e66c; _ga_KE3SY7MRSD=GS1.1.1724041788.0.0.1724041788.0; _ga_RF9R6YT614=GS1.1.1724041788.0.0.1724041788.0; _ga=GA1.1.1843180339.1724033241; apple_state_key=817771465df611ef8ab00ac8aa985783; _ga_G8QGMJPWWV=GS1.1.1724049483.1.1.1724049880.0.0; datadome=HBTqAUPVsbBJaOLirZCUkN3rXjf4gRnrZcNlw2WXTg7bn083SPey8X~ffVwr7qhtg8154634Ee9qq4bCkizBuiMZ3Qtqyf3Isxmsz6GTH_b6LMCKWF4Uea_HSPk;",
-            "origin": "https://reward.ff.garena.com",
-            "referer": "https://reward.ff.garena.com/",
-            "sec-ch-ua": '"Not.A/Brand";v="99", "Chromium";v="124"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Android"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-            "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        }
+def decode_protobuf(encoded_data: bytes, message_type: message.Message) -> message.Message:
+    instance = message_type()
+    instance.ParseFromString(encoded_data)
+    return instance
 
-        uid_res = requests.get(uid_url, headers=uid_headers)
-        uid_data = uid_res.json()
-        uid = uid_data.get("uid")
+def json_to_proto(json_data: str, proto_message: Message) -> bytes:
+    json_format.ParseDict(json.loads(json_data), proto_message)
+    return proto_message.SerializeToString()
 
-        if not uid:
-            return None, "Failed to extract UID"
+def get_access_token(account: str):
+    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
+    payload = account + "&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
+    headers = {
+        'User-Agent': USERAGENT,
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/x-www-form-urlencoded"
+    }
+    with httpx.Client() as client:
+        resp = client.post(url, data=payload, headers=headers)
+        data = resp.json()
+        return data.get("access_token", "0"), data.get("open_id", "0")
 
-        
-        openid_url = "https://shop2game.com/api/auth/player_id_login"
-        openid_headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ar-MA,ar;q=0.9,en-US;q=0.8,en;q=0.7,ar-AE;q=0.6,fr-FR;q=0.5,fr;q=0.4",
-            "Connection": "keep-alive",
-            "Content-Type": "application/json",
-            "Cookie": "source=mb; region=MA; mspid2=ca21e6ccc341648eea845c7f94b92a3c; language=ar; _ga=GA1.1.1955196983.1741710601; datadome=WY~zod4Q8I3~v~GnMd68u1t1ralV5xERfftUC78yUftDKZ3jIcyy1dtl6kdWx9QvK9PpeM~A_qxq3LV3zzKNs64F_TgsB5s7CgWuJ98sjdoCqAxZRPWpa8dkyfO~YBgr; session_key=v0tmwcmf1xqkp7697hhsno0di1smy3dm; _ga_0NY2JETSPJ=GS1.1.1741710601.1.1.1741710899.0.0.0",
-            "Origin": "https://shop2game.com",
-            "Referer": "https://shop2game.com/",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36",
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"'
-        }
-        payload = {
-            "app_id": 100067,
-            "login_id": str(uid)
-        }
+def find_protobuf_start(data: bytes) -> int:
+    """
+    LoginRes protobuf hamesha field markers ke saath start hota hai.
+    Hum response me se woh index dhoondhte hain jahan se valid protobuf start hota hai.
+    Common markers: 
+      - \x08 (field 1 varint - accountId ya similar)
+      - \x12\x03IND pattern (region field)
+    """
+    # Method 1: "IND" pattern dhoondo (region field ke saath aata hai)
+    # \x12\x03IND = field 2 (string, len 3), "IND"
+    idx = data.find(b'\x12\x03IND')
+    if idx != -1:
+        # \x12 se pehle \x08 (field 1) hota hai — wahan se start karo
+        # \x08 wala byte dhoondo idx se pehle
+        for i in range(idx - 1, max(idx - 20, -1), -1):
+            if data[i] == 0x08:
+                return i
 
-        openid_res = requests.post(openid_url, headers=openid_headers, json=payload)
-        openid_data = openid_res.json()
-        open_id = openid_data.get("open_id")
+    # Method 2: JWT token ke just pehle wala protobuf field (B\xe7\x05) dhoondo
+    jwt_marker = data.find(b'B\xe7\x05eyJ')
+    if jwt_marker != -1:
+        # Usse pehle \x08 dhoondo
+        for i in range(jwt_marker - 1, max(jwt_marker - 200, -1), -1):
+            if data[i] == 0x08:
+                return i
 
-        if not open_id:
-            return None, "Failed to extract open_id"
+    # Method 3: Fallback — pehla \x08 dhoondo
+    return data.find(b'\x08')
 
-        return open_id, None
+def generate_jwt_token(uid: str, password: str):
+    # Create account string from UID and password
+    account = f"uid={uid}&password={password}"
 
-    except Exception as e:
-        return None, f"Exception occurred: {str(e)}"
+    # Get access token and open_id
+    token_val, open_id = get_access_token(account)
 
-@app.route('/access-jwt', methods=['GET'])
-def majorlogin_jwt():
-    access_token = request.args.get('access_token')
-    provided_open_id = request.args.get('open_id')
+    if token_val == "0" or open_id == "0":
+        raise Exception("Invalid UID or Password — access token not received")
 
-    if not access_token:
-        return jsonify({"message": "missing access_token"}), 400
+    # Prepare login request
+    body = json.dumps({
+        "open_id": open_id,
+        "open_id_type": "4",
+        "login_token": token_val,
+        "orign_platform_type": "4"
+    })
 
-    open_id = provided_open_id
-    if not open_id:
-        open_id, error = fetch_open_id(access_token)
-        if error:
-            return jsonify({"message": error}), 400
+    # Convert to protobuf and encrypt
+    proto_bytes = json_to_proto(body, FreeFire_pb2.LoginReq())
+    payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, proto_bytes)
 
-    platforms = [8, 3, 4, 6]  
+    # Send login request
+    url = f"{LOGIN_URL}MajorLogin"
+    headers = {
+        'User-Agent': USERAGENT,
+        'Accept': "*/*",
+        'Accept-Encoding': "deflate, gzip",
+        'X-Ga-Sv': "1789534056",
+        'Authorization': "Bearer",
+        'X-Ga': "v1 1",
+        'Releaseversion': RELEASEVERSION,
+        'Content-Type': "application/x-www-form-urlencoded",
+        'X-Unity-Version': "2018.4.12f1",
+        'PlAy_VeR': "1.132.1",
+        'Ob_VeR': RELEASEVERSION
+    }
 
-    for platform_type in platforms:
-        game_data = my_pb2.GameData()
-        game_data.timestamp = "2024-12-05 18:15:32"
-        game_data.game_name = "free fire"
-        game_data.game_version = 1
-        game_data.version_code = "1.108.3"
-        game_data.os_info = "Android OS 9 / API-28 (PI/rel.cjw.20220518.114133)"
-        game_data.device_type = "Handheld"
-        game_data.network_provider = "Verizon Wireless"
-        game_data.connection_type = "WIFI"
-        game_data.screen_width = 1280
-        game_data.screen_height = 960
-        game_data.dpi = "240"
-        game_data.cpu_info = "ARMv7 VFPv3 NEON VMH | 2400 | 4"
-        game_data.total_ram = 5951
-        game_data.gpu_name = "Adreno (TM) 640"
-        game_data.gpu_version = "OpenGL ES 3.0"
-        game_data.user_id = "Google|74b585a9-0268-4ad3-8f36-ef41d2e53610"
-        game_data.ip_address = "172.190.111.97"
-        game_data.language = "en"
-        game_data.open_id = open_id
-        game_data.access_token = access_token
-        game_data.platform_type = platform_type
-        game_data.field_99 = str(platform_type)
-        game_data.field_100 = str(platform_type)
+    with httpx.Client() as client:
+        resp = client.post(url, data=payload, headers=headers)
 
-        serialized_data = game_data.SerializeToString()
-        encrypted_data = encrypt_message(serialized_data)
-        hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
+        print(f"=== HTTP {resp.status_code} | Content-Length: {len(resp.content)} ===")
 
-        url = "https://loginbp.ggblueshark.com/MajorLogin"
-        headers = {
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip",
-            "Content-Type": "application/octet-stream",
-            "Expect": "100-continue",
-            "X-Unity-Version": "2018.4.11f1",
-            "X-GA": "v1 1",
-            "ReleaseVersion": "OB55"
-        }
-        edata = bytes.fromhex(hex_encrypted_data)
+        # === Protobuf ka correct start dhoondo ===
+        start_idx = find_protobuf_start(resp.content)
 
+        if start_idx == -1:
+            raise Exception(
+                f"Protobuf start not found. Raw: {resp.content[:300]}"
+            )
+
+        proto_data = resp.content[start_idx:]
+        print(f"=== Protobuf starts at index {start_idx} ===")
+        print(f"=== Proto data (first 200 bytes): {proto_data[:200]} ===")
+
+        # Parse protobuf
         try:
-            response = requests.post(url, data=edata, headers=headers, verify=False, timeout=5)
+            msg = json.loads(json_format.MessageToJson(
+                decode_protobuf(proto_data, FreeFire_pb2.LoginRes)
+            ))
+        except Exception as parse_err:
+            raise Exception(
+                f"Failed to parse LoginRes from index {start_idx}. "
+                f"Raw (from start): {resp.content[start_idx:start_idx+300]}. "
+                f"Error: {parse_err}"
+            )
 
-            if response.status_code == 200:
-                data_dict = None
-                try:
-                    example_msg = output_pb2.Garena_420()
-                    example_msg.ParseFromString(response.content)
-                    data_dict = {field.name: getattr(example_msg, field.name)
-                                 for field in example_msg.DESCRIPTOR.fields
-                                 if field.name not in ["binary", "binary_data", "Garena420"]}
-                except Exception:
-                    try:
-                        data_dict = response.json()
-                    except ValueError:
-                        continue  
+        # Prepare response
+        response_data = {
+            "account_Id": msg.get("accountId", ""),
+            "agoraEnvironment": msg.get("agoraEnvironment", "live"),
+            "ipRegion": msg.get("ipRegion", ""),
+            "lockRegion": msg.get("lockRegion", ""),
+            "region": msg.get("notiRegion", ""),
+            "serverUrl": msg.get("serverUrl", ""),
+            "token": f"{msg.get('token', '')}"
+        }
 
-                if data_dict and "token" in data_dict:
-                    token_value = data_dict["token"]
-                    try:
-                        decoded_token = jwt.decode(token_value, options={"verify_signature": False})
-                    except Exception as e:
-                        decoded_token = {}
+        return response_data
 
-                    result = {
-                        "account_id": decoded_token.get("account_id"),
-                        "account_name": decoded_token.get("nickname"),
-                        "open_id": open_id,
-                        "access_token": access_token,
-                        "platform": decoded_token.get("external_type"),
-                        "region": decoded_token.get("lock_region"),
-                        "status": "success",
-                        "token": token_value
-                    }
-                    return jsonify(result), 200
-        except requests.RequestException:
-            continue  
-
-    return jsonify({"message": "No valid platform found"}), 400
-
+# === Flask Routes ===
 @app.route('/token', methods=['GET'])
-def oauth_guest():
+def get_jwt_token():
     uid = request.args.get('uid')
     password = request.args.get('password')
+
     if not uid or not password:
-        return jsonify({"message": "Missing uid or password"}), 400
-
-    oauth_url = "https://100067.connect.garena.com/oauth/guest/token/grant"
-    payload = {
-        'uid': uid,
-        'password': password,
-        'response_type': "token",
-        'client_type': "2",
-        'client_secret': "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
-        'client_id': "100067"
-    }
-    headers = {
-        'User-Agent': "GarenaMSDK/4.0.19P9(SM-M526B ;Android 13;pt;BR;)",
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip"
-    }
+        return jsonify({"error": "Both uid and password parameters are required"}), 400
 
     try:
-        oauth_response = requests.post(oauth_url, data=payload, headers=headers, timeout=5)
-    except requests.RequestException as e:
-        return jsonify({"message": str(e)}), 500
-
-    if oauth_response.status_code != 200:
-        try:
-            return jsonify(oauth_response.json()), oauth_response.status_code
-        except ValueError:
-            return jsonify({"message": oauth_response.text}), oauth_response.status_code
-
-    try:
-        oauth_data = oauth_response.json()
-    except ValueError:
-        return jsonify({"message": "Invalid JSON response from OAuth service"}), 500
-
-    if 'access_token' not in oauth_data or 'open_id' not in oauth_data:
-        return jsonify({"message": "OAuth response missing access_token or open_id"}), 500
-
-    params = {
-        'access_token': oauth_data['access_token'],
-        'open_id': oauth_data['open_id']
-    }
-    
-    with app.test_request_context('/api/token', query_string=params):
-        return majorlogin_jwt()
+        token_data = generate_jwt_token(uid, password)
+        return jsonify(token_data), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to generate token: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=1080, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=True)
